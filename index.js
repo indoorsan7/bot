@@ -6,10 +6,14 @@ const {
     ButtonBuilder, 
     ButtonStyle, 
     PermissionFlagsBits, 
-    ChannelType 
+    ChannelType,
+    Partials
 } = require('discord.js');
 const http = require('http');
 const ms = require('ms');
+
+// --- 設定 ---
+const DEVELOPER_ID = 'あなたのユーザーIDを入力'; // ここを書き換えてください
 
 // --- HTTPサーバー (Render等の常時起動用) ---
 const server = http.createServer((req, res) => {
@@ -23,13 +27,16 @@ const client = new Client({
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
-        GatewayIntentBits.GuildMembers, // これを追加
-        GatewayIntentBits.GuildPresences // これを追加
-    ]
+        GatewayIntentBits.GuildMembers,
+        GatewayIntentBits.GuildPresences,
+        GatewayIntentBits.DirectMessages // 認証回答受信用
+    ],
+    partials: [Partials.Channel] // DMを確実に受け取るために必要
 });
 
-// 当選データ保存用
-const giveawayWinners = new Map();
+// データ保持用
+let giveawayWinners = new Map();
+const verifyingUsers = new Map(); // { userId: { answer: number, roleId: string, guildId: string } }
 
 // --- 便利関数 ---
 async function getCategory(guild, name) {
@@ -83,9 +90,53 @@ client.once('ready', async () => {
             options: [
                 { name: 'content', description: '受取対象を選択', type: 3, required: true, autocomplete: true }
             ]
+        },
+        {
+            name: 'verify',
+            description: '認証パネルを作成します',
+            default_member_permissions: PermissionFlagsBits.Administrator.toString(),
+            options: [
+                { name: 'role', description: '認証後に付与するロール', type: 8, required: true }
+            ]
+        },
+        {
+            name: 'data',
+            description: 'データのバックアップと復元（開発者専用）',
+            options: [
+                { name: 'save', description: '全データを文字列化してDMに送信します', type: 1 },
+                {
+                    name: 'load',
+                    description: '文字列データから内部データを復元します',
+                    type: 1,
+                    options: [{ name: 'key', description: '復元用文字列', type: 3, required: true }]
+                }
+            ]
         }
     ];
     await client.application.commands.set(commands);
+});
+
+// --- DMでの回答処理 (認証用) ---
+client.on('messageCreate', async message => {
+    if (message.author.bot || message.guild) return;
+
+    const data = verifyingUsers.get(message.author.id);
+    if (!data) return;
+
+    if (parseInt(message.content) === data.answer) {
+        try {
+            const guild = await client.guilds.fetch(data.guildId);
+            const member = await guild.members.fetch(message.author.id);
+            await member.roles.add(data.roleId);
+            
+            await message.reply('✅ 正解です！認証が完了し、ロールが付与されました。');
+            verifyingUsers.delete(message.author.id);
+        } catch (e) {
+            await message.reply('❌ ロールの付与に失敗しました。BOTの権限を確認してください。');
+        }
+    } else {
+        await message.reply('❌ 答えが違います。半角数字だけで回答してください。');
+    }
 });
 
 // --- インタラクション処理 ---
@@ -93,7 +144,48 @@ client.on('interactionCreate', async interaction => {
     
     // スラッシュコマンド
     if (interaction.isChatInputCommand()) {
-        const { commandName, options, guild, user } = interaction;
+        const { commandName, options, guild, user, member } = interaction;
+
+        // 【Data Command】
+        if (commandName === 'data') {
+            if (user.id !== DEVELOPER_ID) return interaction.reply({ content: '権限がありません。', ephemeral: true });
+
+            if (options.getSubcommand() === 'save') {
+                const backup = {
+                    giveaway: Array.from(giveawayWinners.entries()),
+                    timestamp: Date.now()
+                };
+                const json = JSON.stringify(backup);
+                try {
+                    await user.send(`**バックアップデータ:**\n\`\`\`\n${json}\n\`\`\``);
+                    await interaction.reply({ content: 'データをDMに送信しました。', ephemeral: true });
+                } catch (e) {
+                    await interaction.reply({ content: 'DMを送信できませんでした。', ephemeral: true });
+                }
+            } else if (options.getSubcommand() === 'load') {
+                try {
+                    const key = options.getString('key');
+                    const data = JSON.parse(key);
+                    giveawayWinners = new Map(data.giveaway);
+                    await interaction.reply({ content: `✅ データを復元しました (${giveawayWinners.size}件)`, ephemeral: true });
+                } catch (e) {
+                    await interaction.reply({ content: '❌ 不正なデータ形式です。', ephemeral: true });
+                }
+            }
+        }
+
+        // 【Verify】
+        if (commandName === 'verify') {
+            const role = options.getRole('role');
+            const embed = new EmbedBuilder()
+                .setTitle('✅ メンバー認証')
+                .setDescription('下のボタンを押すとDMで計算問題が送られます。\n正解するとロールが付与されます。')
+                .setColor(0x00FF00);
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId(`v_start_${role.id}`).setLabel('認証を開始').setStyle(ButtonStyle.Success)
+            );
+            await interaction.reply({ embeds: [embed], components: [row] });
+        }
 
         // 【Ticket】
         if (commandName === 'ticket') {
@@ -101,7 +193,6 @@ client.on('interactionCreate', async interaction => {
                 .setTitle(options.getString('title'))
                 .setDescription(options.getString('description'))
                 .setColor(0x00AAFF);
-
             const row = new ActionRowBuilder();
             for (let i = 1; i <= 4; i++) {
                 const label = options.getString(`button${i}`);
@@ -117,89 +208,43 @@ client.on('interactionCreate', async interaction => {
             const num = options.getInteger('number');
             const sponsor = options.getString('sponsor');
             const delInput = options.getString('delete_time');
-
             if (!duration) return interaction.reply({ content: '期間形式が不正です。', ephemeral: true });
 
-            // 応答を保留 (Unknown Interaction対策)
             await interaction.deferReply();
-
             const endTime = Math.floor((Date.now() + duration) / 1000);
             const sponsorMention = sponsor ? (sponsor.startsWith('<@') ? sponsor : `<@${sponsor}>`) : null;
 
             const createEmbed = (currentNum, finished = false, winnerList = []) => {
                 let desc = finished ? `**このギブアウェイは終了しました。**\n\n` : `${options.getString('description')}\n\n`;
-                desc += `当選者数: **${num}**名\n`;
-                desc += finished ? `終了日時: <t:${endTime}:f>\n` : `終了: <t:${endTime}:R>\n`;
-                desc += `エントリー人数: **${currentNum}**人\n`;
+                desc += `当選者数: **${num}**名\n終了: <t:${endTime}:${finished ? 'f' : 'R'}>\n参加人数: **${currentNum}**人\n`;
                 if (sponsorMention) desc += `スポンサー: ${sponsorMention}\n`;
-                if (delInput) desc += `受取期限: **${delInput}以内**\n`;
-                
-                if (finished) {
-                    desc += `\n**当選者:**\n${winnerList.length > 0 ? winnerList.join('\n') : 'なし'}`;
-                }
-
-                return new EmbedBuilder()
-                    .setTitle(finished ? `【終了】${title}` : `🎉 GIVEAWAY: ${title}`)
-                    .setDescription(desc)
-                    .setColor(finished ? 0x2C2F33 : 0xFFD700);
+                if (finished) desc += `\n**当選者:**\n${winnerList.length > 0 ? winnerList.join('\n') : 'なし'}`;
+                return new EmbedBuilder().setTitle(finished ? `【終了】${title}` : `🎉 GIVEAWAY: ${title}`).setDescription(desc).setColor(finished ? 0x2C2F33 : 0xFFD700);
             };
 
-            const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('gs_join').setLabel('参加 / 辞退').setStyle(ButtonStyle.Success).setEmoji('🎁')
-            );
-
-            // メッセージ送信とオブジェクト取得
-            const response = await interaction.editReply({ 
-                embeds: [createEmbed(0)], 
-                components: [row],
-                withResponse: true 
-            });
+            const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('gs_join').setLabel('参加 / 辞退').setStyle(ButtonStyle.Success).setEmoji('🎁'));
+            const response = await interaction.editReply({ embeds: [createEmbed(0)], components: [row], withResponse: true });
             const msg = response.resource ? response.resource.message : response;
-
             const participants = new Set();
             const collector = msg.createMessageComponentCollector({ time: duration });
 
             collector.on('collect', async i => {
-                try {
-                    if (participants.has(i.user.id)) {
-                        participants.delete(i.user.id);
-                        await i.update({ embeds: [createEmbed(participants.size)] });
-                    } else {
-                        participants.add(i.user.id);
-                        await i.update({ embeds: [createEmbed(participants.size)] });
-                    }
-                } catch (e) { console.error(e); }
+                participants.has(i.user.id) ? participants.delete(i.user.id) : participants.add(i.user.id);
+                await i.update({ embeds: [createEmbed(participants.size)] });
             });
 
             collector.on('end', async () => {
-                try {
-                    const winners = Array.from(participants).sort(() => 0.5 - Math.random()).slice(0, num);
-                    const winnerMentions = winners.map(id => `<@${id}>`);
-
-                    await msg.edit({ 
-                        embeds: [createEmbed(participants.size, true, winnerMentions)], 
-                        components: [new ActionRowBuilder().addComponents(
-                            new ButtonBuilder().setCustomId('gs_end').setLabel('終了').setStyle(ButtonStyle.Secondary).setDisabled(true)
-                        )]
+                const winners = Array.from(participants).sort(() => 0.5 - Math.random()).slice(0, num);
+                const winnerMentions = winners.map(id => `<@${id}>`);
+                await msg.edit({ embeds: [createEmbed(participants.size, true, winnerMentions)], components: [] });
+                if (winners.length > 0) {
+                    const delMs = delInput ? ms(delInput) : null;
+                    interaction.channel.send(`🎊 **${title}** 当選: ${winnerMentions.join(' ')}\n\`/claim\` で受取可能${delInput ? ` (期限: ${delInput})` : ''}`);
+                    winners.forEach(wId => {
+                        if (!giveawayWinners.has(wId)) giveawayWinners.set(wId, []);
+                        giveawayWinners.get(wId).push({ title, expire: delMs ? Date.now() + delMs : null, guild: guild.name });
                     });
-
-                    if (winners.length > 0) {
-                        const delMs = delInput ? ms(delInput) : null;
-                        const limitTs = delMs ? Math.floor((Date.now() + delMs) / 1000) : null;
-
-                        let announce = `🎊 **${title}** の当選者が決定しました！\n当選者: ${winnerMentions.join(' ')}\n\`/claim\` で受け取ってください。`;
-                        if (limitTs) announce += ` (期限: <t:${limitTs}:t>)`;
-                        
-                        interaction.channel.send(announce);
-
-                        winners.forEach(wId => {
-                            if (!giveawayWinners.has(wId)) giveawayWinners.set(wId, []);
-                            giveawayWinners.get(wId).push({ title, expire: delMs ? Date.now() + delMs : null });
-                        });
-                    } else {
-                        interaction.channel.send(`**${title}**: 参加者がいなかったため、当選者はいませんでした。`);
-                    }
-                } catch (e) { console.error(e); }
+                }
             });
         }
 
@@ -208,8 +253,7 @@ client.on('interactionCreate', async interaction => {
             const item = options.getString('content');
             let userData = giveawayWinners.get(user.id) || [];
             const idx = userData.findIndex(i => i.title === item && (i.expire === null || i.expire > Date.now()));
-
-            if (idx === -1) return interaction.reply({ content: '有効な当選データが見つかりません。', ephemeral: true });
+            if (idx === -1) return interaction.reply({ content: '有効な当選データがありません。', ephemeral: true });
 
             const category = await getCategory(guild, '---claim---');
             const claimCh = await guild.channels.create({
@@ -220,14 +264,11 @@ client.on('interactionCreate', async interaction => {
                     { id: user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
                 ],
             });
-
             userData.splice(idx, 1);
-            if (userData.length === 0) giveawayWinners.delete(user.id);
-            else giveawayWinners.set(user.id, userData);
-
+            userData.length === 0 ? giveawayWinners.delete(user.id) : giveawayWinners.set(user.id, userData);
             const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('close_ch').setLabel('クローズ').setStyle(ButtonStyle.Danger));
-            await interaction.reply({ content: '作成しました。リストから削除しました。', ephemeral: true });
-            claimCh.send({ content: `<@${user.id}> さんの景品: **${item}**`, components: [row] });
+            await interaction.reply({ content: 'チケットを作成しました。', ephemeral: true });
+            claimCh.send({ content: `<@${user.id}> さん、景品 **${item}** の受取用窓口です。`, components: [row] });
         }
     }
 
@@ -235,12 +276,24 @@ client.on('interactionCreate', async interaction => {
     if (interaction.isAutocomplete()) {
         const userData = giveawayWinners.get(interaction.user.id) || [];
         const active = userData.filter(i => i.expire === null || i.expire > Date.now());
-        await interaction.respond(active.slice(0, 25).map(i => ({ name: i.title, value: i.title })));
+        await interaction.respond(active.slice(0, 25).map(i => ({ name: `[${i.guild}] ${i.title}`, value: i.title })));
     }
 
-    // ボタン
+    // ボタン処理
     if (interaction.isButton()) {
         const { customId, guild, channel, user, member } = interaction;
+
+        if (customId.startsWith('v_start_')) {
+            const roleId = customId.replace('v_start_', '');
+            const n1 = Math.floor(Math.random() * 9) + 1, n2 = Math.floor(Math.random() * 9) + 1;
+            try {
+                await user.send(`**${guild.name}** 認証用計算問題:\n\n**${n1} + ${n2} = ?**\n\n数字だけで返信してください。`);
+                verifyingUsers.set(user.id, { answer: n1 + n2, roleId, guildId: guild.id });
+                await interaction.reply({ content: 'DMを確認してください。', ephemeral: true });
+            } catch {
+                await interaction.reply({ content: 'DMを送信できませんでした。', ephemeral: true });
+            }
+        }
 
         if (customId.startsWith('t_open_')) {
             const label = customId.replace('t_open_', '');
@@ -255,14 +308,14 @@ client.on('interactionCreate', async interaction => {
             });
             const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('close_ch').setLabel('クローズ').setStyle(ButtonStyle.Danger));
             await interaction.reply({ content: '作成完了', ephemeral: true });
-            ticketCh.send({ content: `<@${user.id}> さん、要件をどうぞ。`, components: [row] });
+            ticketCh.send({ content: `<@${user.id}> 要件を入力してください。`, components: [row] });
         }
 
         if (customId === 'close_ch') {
-            await interaction.reply('クローズしました。作成者本人の閲覧権限を削除しました。');
+            await interaction.reply('チャンネルを凍結しました。');
             await channel.permissionOverwrites.set([{ id: guild.id, deny: [PermissionFlagsBits.ViewChannel] }]);
             const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('delete_ch').setLabel('削除').setStyle(ButtonStyle.Danger));
-            await channel.send({ content: '管理者は削除ボタンで削除できます。', components: [row] });
+            await channel.send({ content: '管理者が削除ボタンを押すと消去されます。', components: [row] });
         }
 
         if (customId === 'delete_ch') {
@@ -274,26 +327,4 @@ client.on('interactionCreate', async interaction => {
     }
 });
 
-// --- ログイン処理 (最終デバッグ版) ---
-console.log("Discordへのログインを開始します...");
-
-// 5秒経っても反応がない場合の警告を追加
-const timeout = setTimeout(() => {
-    console.log("警告: ログイン処理が5秒以上経過しても完了していません。通信が詰まっている可能性があります。");
-}, 5000);
-
-client.login(process.env.DISCORD_TOKEN).then(() => {
-    clearTimeout(timeout);
-    console.log("【成功】Discordに接続されました！");
-}).catch(err => {
-    clearTimeout(timeout);
-    console.error("【失敗】ログインエラーが発生しました:");
-    
-    if (err.message.includes("Privileged intent")) {
-        console.error("原因: インテント(Intents)がDeveloper Portalで有効になっていません。");
-    } else if (err.message.includes("An invalid token")) {
-        console.error("原因: トークンが間違っているか、無効化されています。");
-    } else {
-        console.error("エラー詳細:", err);
-    }
-});
+client.login(process.env.DISCORD_TOKEN).catch(console.error);
