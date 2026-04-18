@@ -13,7 +13,7 @@ const http = require('http');
 const ms = require('ms');
 
 // --- 設定 ---
-const DEVELOPER_ID = 'あなたのユーザーIDを入力'; // ここを書き換えてください
+const DEVELOPER_ID = '1307150820432810017'; // ここを書き換えてください
 
 // --- HTTPサーバー (Render等の常時起動用) ---
 const server = http.createServer((req, res) => {
