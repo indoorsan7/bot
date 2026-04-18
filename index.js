@@ -119,8 +119,12 @@ client.once('clientReady', async () => {
     ];
 
     try {
-        await client.application.commands.set(commands);
-        console.log('スラッシュコマンド（statsを含む）を登録しました。');
+        const registeredCommands = await client.application.commands.set(commands);
+        console.log('--- スラッシュコマンドの登録完了 ---');
+        registeredCommands.forEach(cmd => {
+            console.log(`[登録済み] /${cmd.name}: ${cmd.description}`);
+        });
+        console.log('-----------------------------------');
     } catch (error) {
         console.error('コマンド登録中にエラーが発生しました:', error);
     }
@@ -137,7 +141,6 @@ client.on('interactionCreate', async interaction => {
             await interaction.deferReply();
 
             try {
-                // DonutSMP API Call
                 const response = await fetch(`https://api.donutsmp.net/v1/stats/${mcid}`, {
                     headers: { 'Authorization': DONUT_API_KEY }
                 });
