@@ -32,6 +32,7 @@ const client = new Client({
     partials: [Partials.Channel] 
 });
 
+const DONUT_API_KEY = "f2e5c051e9d24406a86696f5cf5a77ca";
 const giveawayWinners = new Map();
 const verifyingUsers = new Map();
 
@@ -67,6 +68,13 @@ client.once('clientReady', async () => {
     console.log(`${client.user.tag} が正常に起動しました！`);
     
     const commands = [
+        {
+            name: 'stats',
+            description: 'DonutSMPのプレイヤー情報を表示します',
+            options: [
+                { name: 'mcid', description: 'Minecraftのユーザー名', type: 3, required: true }
+            ]
+        },
         {
             name: 'verify',
             description: '認証パネルを作成します',
@@ -118,32 +126,54 @@ client.once('clientReady', async () => {
     }
 });
 
-// --- DM認証処理 ---
-client.on('messageCreate', async message => {
-    if (message.author.bot || message.guild) return; 
-    const data = verifyingUsers.get(message.author.id);
-    if (!data) return;
-
-    if (parseInt(message.content) === data.answer) {
-        try {
-            const guild = await client.guilds.fetch(data.guildId);
-            const member = await guild.members.fetch(message.author.id);
-            await member.roles.add(data.roleId);
-            await message.reply('✅ 正解です！認証が完了し、ロールが付与されました。');
-            verifyingUsers.delete(message.author.id);
-        } catch (e) {
-            await message.reply('❌ サーバー内でエラーが発生しました。BOTの権限やロール順序を確認してください。');
-        }
-    } else {
-        await message.reply('❌ 答えが違います。もう一度数値を入力してください。');
-    }
-});
-
 // --- インタラクション処理 ---
 client.on('interactionCreate', async interaction => {
     if (interaction.isChatInputCommand()) {
         const { commandName, options, guild, user } = interaction;
 
+        // --- Stats Command ---
+        if (commandName === 'stats') {
+            const mcid = options.getString('mcid');
+            await interaction.deferReply();
+
+            try {
+                // DonutSMP API Call
+                const response = await fetch(`https://api.donutsmp.net/v1/stats/${mcid}`, {
+                    headers: { 'Authorization': DONUT_API_KEY }
+                });
+
+                if (!response.ok) {
+                    if (response.status === 404) {
+                        return interaction.editReply(`❌ プレイヤー \`${mcid}\` は見つかりませんでした。`);
+                    }
+                    throw new Error(`API Error: ${response.status}`);
+                }
+
+                const data = await response.json();
+                
+                const embed = new EmbedBuilder()
+                    .setTitle(`🍩 DonutSMP Stats: ${data.username || mcid}`)
+                    .setThumbnail(`https://mc-heads.net/avatar/${mcid}`)
+                    .setColor(0xFFA500)
+                    .addFields(
+                        { name: '💵 所持金', value: `$${(data.money || 0).toLocaleString()}`, inline: true },
+                        { name: '💎 Shards', value: `${(data.shards || 0).toLocaleString()}`, inline: true },
+                        { name: '\u200B', value: '\u200B', inline: true },
+                        { name: '⚔️ Kills', value: `${data.kills || 0}`, inline: true },
+                        { name: '☠️ Deaths', value: `${data.deaths || 0}`, inline: true },
+                        { name: '🔥 K/D', value: `${data.deaths ? (data.kills / data.deaths).toFixed(2) : data.kills}`, inline: true }
+                    )
+                    .setTimestamp()
+                    .setFooter({ text: 'DonutSMP Official API' });
+
+                await interaction.editReply({ embeds: [embed] });
+            } catch (error) {
+                console.error(error);
+                await interaction.editReply('❌ データの取得中にエラーが発生しました。APIサーバーが混み合っている可能性があります。');
+            }
+        }
+
+        // --- Other Commands (既存) ---
         if (commandName === 'verify') {
             const role = options.getRole('role');
             const embed = new EmbedBuilder()
