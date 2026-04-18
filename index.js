@@ -8,7 +8,7 @@ const {
     PermissionFlagsBits, 
     ChannelType,
     Partials,
-    MessageFlags // 警告対策に追加
+    MessageFlags
 } = require('discord.js');
 const http = require('http');
 const ms = require('ms');
@@ -63,9 +63,18 @@ async function checkAndDeleteCategory(guild, categoryId) {
 }
 
 // --- 起動イベント ---
-client.once('clientReady', async () => { // 警告対策: ready -> clientReady
+client.once('clientReady', async () => {
     console.log(`${client.user.tag} が正常に起動しました！`);
+    
     const commands = [
+        {
+            name: 'verify',
+            description: '認証パネルを作成します',
+            default_member_permissions: PermissionFlagsBits.Administrator.toString(),
+            options: [
+                { name: 'role', description: '認証後に付与するロール', type: 8, required: true }
+            ]
+        },
         {
             name: 'ticket',
             description: 'チケットパネルを作成します',
@@ -98,17 +107,15 @@ client.once('clientReady', async () => { // 警告対策: ready -> clientReady
             options: [
                 { name: 'content', description: '受取対象を選択', type: 3, required: true, autocomplete: true }
             ]
-        },
-        {
-            name: 'verify',
-            description: '認証パネルを作成します',
-            default_member_permissions: PermissionFlagsBits.Administrator.toString(),
-            options: [
-                { name: 'role', description: '認証後に付与するロール', type: 8, required: true }
-            ]
         }
     ];
-    await client.application.commands.set(commands);
+
+    try {
+        await client.application.commands.set(commands);
+        console.log('スラッシュコマンドを登録しました。');
+    } catch (error) {
+        console.error('コマンド登録中にエラーが発生しました:', error);
+    }
 });
 
 // --- DM認証処理 ---
@@ -125,7 +132,7 @@ client.on('messageCreate', async message => {
             await message.reply('✅ 正解です！認証が完了し、ロールが付与されました。');
             verifyingUsers.delete(message.author.id);
         } catch (e) {
-            await message.reply('❌ エラーが発生しました。');
+            await message.reply('❌ サーバー内でエラーが発生しました。BOTの権限やロール順序を確認してください。');
         }
     } else {
         await message.reply('❌ 答えが違います。もう一度数値を入力してください。');
@@ -216,10 +223,12 @@ client.on('interactionCreate', async interaction => {
             const idx = userData.findIndex(i => i.title === item && (i.expire === null || i.expire > Date.now()));
             if (idx === -1) return interaction.reply({ content: '有効な当選データがありません。', flags: MessageFlags.Ephemeral });
 
-            const existing = guild.channels.cache.find(c => c.name === `claim-${user.username.toLowerCase()}`);
-            if (existing) return interaction.reply({ content: `既にチャンネルがあります: ${existing}`, flags: MessageFlags.Ephemeral });
+            const existing = guild.channels.cache.find(c => 
+                c.name.startsWith('claim-') && c.name.toLowerCase().includes(user.username.toLowerCase())
+            );
+            if (existing) return interaction.reply({ content: `既に受取用チャンネルがあります: ${existing}`, flags: MessageFlags.Ephemeral });
 
-            await interaction.deferReply({ flags: MessageFlags.Ephemeral }); // 3秒ルール対策
+            await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
             try {
                 const category = await getCategory(guild, '---claim---');
@@ -263,19 +272,18 @@ client.on('interactionCreate', async interaction => {
                 verifyingUsers.set(user.id, { answer, roleId, guildId: guild.id });
                 await interaction.reply({ content: 'DMを確認してください。', flags: MessageFlags.Ephemeral });
             } catch (e) {
-                await interaction.reply({ content: 'DMを送れませんでした。', flags: MessageFlags.Ephemeral });
+                await interaction.reply({ content: 'DMを送れませんでした。設定を確認してください。', flags: MessageFlags.Ephemeral });
             }
         }
 
         if (customId.startsWith('t_open_')) {
-            // 重複チェック
             const existing = guild.channels.cache.find(c => 
                 (c.name.startsWith('ticket-') || c.name.startsWith('claim-')) && 
                 c.name.toLowerCase().includes(user.username.toLowerCase())
             );
             if (existing) return interaction.reply({ content: `既にチャンネルがあります: ${existing}`, flags: MessageFlags.Ephemeral });
 
-            await interaction.deferReply({ flags: MessageFlags.Ephemeral }); // 3秒ルール対策
+            await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
             try {
                 const label = customId.replace('t_open_', '');
@@ -289,7 +297,7 @@ client.on('interactionCreate', async interaction => {
                     ],
                 });
                 const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('close_ch').setLabel('クローズ').setStyle(ButtonStyle.Danger));
-                await interaction.editReply({ content: `作成しました: ${ticketCh}` }); // editReplyに変更
+                await interaction.editReply({ content: `作成しました: ${ticketCh}` });
                 await ticketCh.send({ content: `<@${user.id}> さん、要件をどうぞ。`, components: [row] });
             } catch (err) {
                 console.error(err);
