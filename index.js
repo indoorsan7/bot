@@ -7,15 +7,16 @@ const {
     ButtonStyle, 
     PermissionFlagsBits, 
     ChannelType,
-    Partials
+    Partials,
+    MessageFlags
 } = require('discord.js');
 const http = require('http');
 const ms = require('ms');
 
 // --- 設定 ---
-const DEVELOPER_ID = '1307150820432810017'; // ここを書き換えてください
+const DEVELOPER_ID = '1307150820432810017'; // 指定されたIDを設定済み
 
-// --- HTTPサーバー (Render等の常時起動用) ---
+// --- HTTPサーバー ---
 const server = http.createServer((req, res) => {
     res.writeHead(200);
     res.end('Bot is alive!');
@@ -28,15 +29,13 @@ const client = new Client({
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.GuildMembers,
-        GatewayIntentBits.GuildPresences,
-        GatewayIntentBits.DirectMessages // 認証回答受信用
+        GatewayIntentBits.DirectMessages 
     ],
-    partials: [Partials.Channel] // DMを確実に受け取るために必要
+    partials: [Partials.Channel]
 });
 
-// データ保持用
 let giveawayWinners = new Map();
-const verifyingUsers = new Map(); // { userId: { answer: number, roleId: string, guildId: string } }
+const verifyingUsers = new Map();
 
 // --- 便利関数 ---
 async function getCategory(guild, name) {
@@ -113,63 +112,63 @@ client.once('ready', async () => {
             ]
         }
     ];
-    await client.application.commands.set(commands);
+    await client.application.commands.set(commands).catch(console.error);
 });
 
 // --- DMでの回答処理 (認証用) ---
 client.on('messageCreate', async message => {
     if (message.author.bot || message.guild) return;
-
     const data = verifyingUsers.get(message.author.id);
     if (!data) return;
 
-    if (parseInt(message.content) === data.answer) {
+    const userAnswer = parseInt(message.content);
+    if (!isNaN(userAnswer) && userAnswer === data.answer) {
         try {
             const guild = await client.guilds.fetch(data.guildId);
             const member = await guild.members.fetch(message.author.id);
             await member.roles.add(data.roleId);
-            
             await message.reply('✅ 正解です！認証が完了し、ロールが付与されました。');
             verifyingUsers.delete(message.author.id);
         } catch (e) {
-            await message.reply('❌ ロールの付与に失敗しました。BOTの権限を確認してください。');
+            await message.reply('❌ ロールの付与に失敗しました。BOTの権限が不足しているか、サーバーを退出している可能性があります。');
         }
     } else {
-        await message.reply('❌ 答えが違います。半角数字だけで回答してください。');
+        await message.reply('❌ 答えが違います。半角数字のみで入力してください。');
     }
 });
 
 // --- インタラクション処理 ---
 client.on('interactionCreate', async interaction => {
     
-    // スラッシュコマンド
     if (interaction.isChatInputCommand()) {
         const { commandName, options, guild, user, member } = interaction;
 
         // 【Data Command】
         if (commandName === 'data') {
-            if (user.id !== DEVELOPER_ID) return interaction.reply({ content: '権限がありません。', ephemeral: true });
-
+            if (user.id !== DEVELOPER_ID) return interaction.reply({ content: 'このコマンドを実行する権限がありません。', flags: MessageFlags.Ephemeral });
+            
+            await interaction.deferReply({ flags: MessageFlags.Ephemeral });
             if (options.getSubcommand() === 'save') {
                 const backup = {
                     giveaway: Array.from(giveawayWinners.entries()),
-                    timestamp: Date.now()
+                    timestamp: Date.now(),
+                    user: user.tag
                 };
                 const json = JSON.stringify(backup);
                 try {
-                    await user.send(`**バックアップデータ:**\n\`\`\`\n${json}\n\`\`\``);
-                    await interaction.reply({ content: 'データをDMに送信しました。', ephemeral: true });
+                    await user.send(`**データバックアップ:**\n\`\`\`json\n${json}\n\`\`\``);
+                    await interaction.editReply('データをDMに送信しました。');
                 } catch (e) {
-                    await interaction.reply({ content: 'DMを送信できませんでした。', ephemeral: true });
+                    await interaction.editReply('DMを送信できませんでした。設定を確認してください。');
                 }
             } else if (options.getSubcommand() === 'load') {
                 try {
                     const key = options.getString('key');
                     const data = JSON.parse(key);
                     giveawayWinners = new Map(data.giveaway);
-                    await interaction.reply({ content: `✅ データを復元しました (${giveawayWinners.size}件)`, ephemeral: true });
+                    await interaction.editReply(`✅ データを正常に復元しました。 (件数: ${giveawayWinners.size})`);
                 } catch (e) {
-                    await interaction.reply({ content: '❌ 不正なデータ形式です。', ephemeral: true });
+                    await interaction.editReply('❌ 不正なデータ形式です。');
                 }
             }
         }
@@ -179,7 +178,7 @@ client.on('interactionCreate', async interaction => {
             const role = options.getRole('role');
             const embed = new EmbedBuilder()
                 .setTitle('✅ メンバー認証')
-                .setDescription('下のボタンを押すとDMで計算問題が送られます。\n正解するとロールが付与されます。')
+                .setDescription('下のボタンを押すと、DMで簡単な計算問題が送られます。\n正解すると自動的にロールが付与されます。')
                 .setColor(0x00FF00);
             const row = new ActionRowBuilder().addComponents(
                 new ButtonBuilder().setCustomId(`v_start_${role.id}`).setLabel('認証を開始').setStyle(ButtonStyle.Success)
@@ -203,28 +202,32 @@ client.on('interactionCreate', async interaction => {
 
         // 【Giveaway】
         if (commandName === 'gs') {
+            await interaction.deferReply();
             const title = options.getString('title');
-            const duration = ms(options.getString('time') || "");
+            const duration = ms(options.getString('time') || "1h");
             const num = options.getInteger('number');
             const sponsor = options.getString('sponsor');
             const delInput = options.getString('delete_time');
-            if (!duration) return interaction.reply({ content: '期間形式が不正です。', ephemeral: true });
 
-            await interaction.deferReply();
             const endTime = Math.floor((Date.now() + duration) / 1000);
             const sponsorMention = sponsor ? (sponsor.startsWith('<@') ? sponsor : `<@${sponsor}>`) : null;
 
             const createEmbed = (currentNum, finished = false, winnerList = []) => {
-                let desc = finished ? `**このギブアウェイは終了しました。**\n\n` : `${options.getString('description')}\n\n`;
+                let desc = finished ? `**ギブアウェイ終了**\n\n` : `${options.getString('description')}\n\n`;
                 desc += `当選者数: **${num}**名\n終了: <t:${endTime}:${finished ? 'f' : 'R'}>\n参加人数: **${currentNum}**人\n`;
                 if (sponsorMention) desc += `スポンサー: ${sponsorMention}\n`;
                 if (finished) desc += `\n**当選者:**\n${winnerList.length > 0 ? winnerList.join('\n') : 'なし'}`;
-                return new EmbedBuilder().setTitle(finished ? `【終了】${title}` : `🎉 GIVEAWAY: ${title}`).setDescription(desc).setColor(finished ? 0x2C2F33 : 0xFFD700);
+                return new EmbedBuilder()
+                    .setTitle(finished ? `【終了】${title}` : `🎉 GIVEAWAY: ${title}`)
+                    .setDescription(desc)
+                    .setColor(finished ? 0x2C2F33 : 0xFFD700);
             };
 
-            const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('gs_join').setLabel('参加 / 辞退').setStyle(ButtonStyle.Success).setEmoji('🎁'));
-            const response = await interaction.editReply({ embeds: [createEmbed(0)], components: [row], withResponse: true });
-            const msg = response.resource ? response.resource.message : response;
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId('gs_join').setLabel('参加 / 辞退').setStyle(ButtonStyle.Success).setEmoji('🎁')
+            );
+
+            const msg = await interaction.editReply({ embeds: [createEmbed(0)], components: [row] });
             const participants = new Set();
             const collector = msg.createMessageComponentCollector({ time: duration });
 
@@ -237,9 +240,10 @@ client.on('interactionCreate', async interaction => {
                 const winners = Array.from(participants).sort(() => 0.5 - Math.random()).slice(0, num);
                 const winnerMentions = winners.map(id => `<@${id}>`);
                 await msg.edit({ embeds: [createEmbed(participants.size, true, winnerMentions)], components: [] });
+                
                 if (winners.length > 0) {
                     const delMs = delInput ? ms(delInput) : null;
-                    interaction.channel.send(`🎊 **${title}** 当選: ${winnerMentions.join(' ')}\n\`/claim\` で受取可能${delInput ? ` (期限: ${delInput})` : ''}`);
+                    interaction.channel.send(`🎊 **${title}** 当選おめでとうございます！\n当選者: ${winnerMentions.join(' ')}\n\`/claim\` で受け取ってください。`);
                     winners.forEach(wId => {
                         if (!giveawayWinners.has(wId)) giveawayWinners.set(wId, []);
                         giveawayWinners.get(wId).push({ title, expire: delMs ? Date.now() + delMs : null, guild: guild.name });
@@ -250,10 +254,12 @@ client.on('interactionCreate', async interaction => {
 
         // 【Claim】
         if (commandName === 'claim') {
+            await interaction.deferReply({ flags: MessageFlags.Ephemeral });
             const item = options.getString('content');
             let userData = giveawayWinners.get(user.id) || [];
-            const idx = userData.findIndex(i => i.title === item && (i.expire === null || i.expire > Date.now()));
-            if (idx === -1) return interaction.reply({ content: '有効な当選データがありません。', ephemeral: true });
+            const idx = userData.findIndex(i => i.title === item);
+
+            if (idx === -1) return interaction.editReply('有効な当選データが見つかりません。');
 
             const category = await getCategory(guild, '---claim---');
             const claimCh = await guild.channels.create({
@@ -264,19 +270,20 @@ client.on('interactionCreate', async interaction => {
                     { id: user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
                 ],
             });
+
             userData.splice(idx, 1);
             userData.length === 0 ? giveawayWinners.delete(user.id) : giveawayWinners.set(user.id, userData);
+            
             const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('close_ch').setLabel('クローズ').setStyle(ButtonStyle.Danger));
-            await interaction.reply({ content: 'チケットを作成しました。', ephemeral: true });
-            claimCh.send({ content: `<@${user.id}> さん、景品 **${item}** の受取用窓口です。`, components: [row] });
+            await interaction.editReply('受取用チャンネルを作成しました。');
+            claimCh.send({ content: `<@${user.id}> さん、**${item}** の受取窓口です。`, components: [row] });
         }
     }
 
     // オートコンプリート
     if (interaction.isAutocomplete()) {
         const userData = giveawayWinners.get(interaction.user.id) || [];
-        const active = userData.filter(i => i.expire === null || i.expire > Date.now());
-        await interaction.respond(active.slice(0, 25).map(i => ({ name: `[${i.guild}] ${i.title}`, value: i.title })));
+        await interaction.respond(userData.slice(0, 25).map(i => ({ name: `[${i.guild}] ${i.title}`, value: i.title })));
     }
 
     // ボタン処理
@@ -284,18 +291,20 @@ client.on('interactionCreate', async interaction => {
         const { customId, guild, channel, user, member } = interaction;
 
         if (customId.startsWith('v_start_')) {
+            await interaction.deferReply({ flags: MessageFlags.Ephemeral });
             const roleId = customId.replace('v_start_', '');
             const n1 = Math.floor(Math.random() * 9) + 1, n2 = Math.floor(Math.random() * 9) + 1;
             try {
-                await user.send(`**${guild.name}** 認証用計算問題:\n\n**${n1} + ${n2} = ?**\n\n数字だけで返信してください。`);
+                await user.send(`**${guild.name}** 認証システムです。\n計算の答えを数字で送信してください：\n\n**${n1} + ${n2} = ?**`);
                 verifyingUsers.set(user.id, { answer: n1 + n2, roleId, guildId: guild.id });
-                await interaction.reply({ content: 'DMを確認してください。', ephemeral: true });
+                await interaction.editReply('DMに問題を送信しました。確認してください。');
             } catch {
-                await interaction.reply({ content: 'DMを送信できませんでした。', ephemeral: true });
+                await interaction.editReply('DMを送信できませんでした。DMを許可設定にしてください。');
             }
         }
 
         if (customId.startsWith('t_open_')) {
+            await interaction.deferReply({ flags: MessageFlags.Ephemeral });
             const label = customId.replace('t_open_', '');
             const category = await getCategory(guild, '---ticket---');
             const ticketCh = await guild.channels.create({
@@ -307,21 +316,21 @@ client.on('interactionCreate', async interaction => {
                 ],
             });
             const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('close_ch').setLabel('クローズ').setStyle(ButtonStyle.Danger));
-            await interaction.reply({ content: '作成完了', ephemeral: true });
+            await interaction.editReply('チケットを作成しました。');
             ticketCh.send({ content: `<@${user.id}> 要件を入力してください。`, components: [row] });
         }
 
         if (customId === 'close_ch') {
-            await interaction.reply('チャンネルを凍結しました。');
+            await interaction.reply('チャンネルをクローズしました。');
             await channel.permissionOverwrites.set([{ id: guild.id, deny: [PermissionFlagsBits.ViewChannel] }]);
             const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('delete_ch').setLabel('削除').setStyle(ButtonStyle.Danger));
-            await channel.send({ content: '管理者が削除ボタンを押すと消去されます。', components: [row] });
+            await channel.send({ content: '管理者は削除ボタンでチャンネルを消去できます。', components: [row] });
         }
 
         if (customId === 'delete_ch') {
-            if (!member.permissions.has(PermissionFlagsBits.Administrator)) return interaction.reply({ content: '権限不足', ephemeral: true });
+            if (!member.permissions.has(PermissionFlagsBits.Administrator)) return interaction.reply({ content: 'この操作は管理者のみ可能です。', flags: MessageFlags.Ephemeral });
             const pId = channel.parentId;
-            await channel.delete();
+            await channel.delete().catch(() => {});
             if (pId) await checkAndDeleteCategory(guild, pId);
         }
     }
