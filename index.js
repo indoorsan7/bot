@@ -26,10 +26,12 @@ const client = new Client({
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.GuildMembers,
-        GatewayIntentBits.GuildPresences,
-        GatewayIntentBits.DirectMessages 
+        GatewayIntentBits.DirectMessages // DMを受け取るために必要
     ],
-    partials: [Partials.Channel] 
+    partials: [
+        Partials.Channel, 
+        Partials.Message // DMを正常に処理するために必要
+    ] 
 });
 
 const giveawayWinners = new Map();
@@ -63,7 +65,7 @@ async function checkAndDeleteCategory(guild, categoryId) {
 }
 
 // --- 起動イベント ---
-client.once('clientReady', async () => {
+client.once('ready', async () => {
     console.log(`${client.user.tag} が正常に起動しました！`);
     
     const commands = [
@@ -122,21 +124,32 @@ client.once('clientReady', async () => {
     }
 });
 
-// --- DM認証処理 ---
-client.on('messageCreate', async message => {
-    if (message.author.bot || message.guild) return; 
+// --- DM認証の回答処理 ---
+client.on('messageCreate', async (message) => {
+    // BOT自身のメッセージやサーバー内メッセージは無視
+    if (message.author.bot || message.guild) return;
+
     const data = verifyingUsers.get(message.author.id);
     if (!data) return;
 
-    if (parseInt(message.content) === data.answer) {
+    const userAnswer = parseInt(message.content);
+
+    if (userAnswer === data.answer) {
         try {
             const guild = await client.guilds.fetch(data.guildId);
             const member = await guild.members.fetch(message.author.id);
-            await member.roles.add(data.roleId);
-            await message.reply('✅ 正解です！認証が完了し、ロールが付与されました。');
-            verifyingUsers.delete(message.author.id);
-        } catch (e) {
-            await message.reply('❌ サーバー内でエラーが発生しました。BOTの権限やロール順序を確認してください。');
+            const role = await guild.roles.fetch(data.roleId);
+
+            if (role) {
+                await member.roles.add(role);
+                await message.reply(`✅ 正解です！ **${guild.name}** での認証が完了しました。`);
+                verifyingUsers.delete(message.author.id);
+            } else {
+                await message.reply('❌ 付与するロールが見つかりませんでした。サーバー管理者に連絡してください。');
+            }
+        } catch (error) {
+            console.error(error);
+            await message.reply('❌ 認証中にエラーが発生しました。BOTの権限が不足しているか、ロールの順序が正しくない可能性があります。');
         }
     } else {
         await message.reply('❌ 答えが違います。もう一度数値を入力してください。');
@@ -160,6 +173,7 @@ client.on('interactionCreate', async interaction => {
             await interaction.reply({ embeds: [embed], components: [row] });
         }
 
+        // --- Ticket, GS, Claim などの既存処理 ---
         if (commandName === 'ticket') {
             const embed = new EmbedBuilder()
                 .setTitle(options.getString('title'))
