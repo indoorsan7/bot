@@ -120,7 +120,7 @@ client.once('clientReady', async () => {
 
     try {
         await client.application.commands.set(commands);
-        console.log('スラッシュコマンドを登録しました。');
+        console.log('スラッシュコマンド（statsを含む）を登録しました。');
     } catch (error) {
         console.error('コマンド登録中にエラーが発生しました:', error);
     }
@@ -161,7 +161,7 @@ client.on('interactionCreate', async interaction => {
                         { name: '\u200B', value: '\u200B', inline: true },
                         { name: '⚔️ Kills', value: `${data.kills || 0}`, inline: true },
                         { name: '☠️ Deaths', value: `${data.deaths || 0}`, inline: true },
-                        { name: '🔥 K/D', value: `${data.deaths ? (data.kills / data.deaths).toFixed(2) : data.kills}`, inline: true }
+                        { name: '🔥 K/D', value: `${data.deaths ? (data.kills / data.deaths).toFixed(2) : data.kills.toString()}`, inline: true }
                     )
                     .setTimestamp()
                     .setFooter({ text: 'DonutSMP Official API' });
@@ -173,7 +173,7 @@ client.on('interactionCreate', async interaction => {
             }
         }
 
-        // --- Other Commands (既存) ---
+        // --- Other Commands ---
         if (commandName === 'verify') {
             const role = options.getRole('role');
             const embed = new EmbedBuilder()
@@ -206,7 +206,8 @@ client.on('interactionCreate', async interaction => {
 
         if (commandName === 'gs') {
             const title = options.getString('title');
-            const duration = ms(options.getString('time') || "");
+            const durationInput = options.getString('time');
+            const duration = durationInput ? ms(durationInput) : null;
             const num = options.getInteger('number');
             const sponsor = options.getString('sponsor');
             const delInput = options.getString('delete_time');
