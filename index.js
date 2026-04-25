@@ -91,7 +91,6 @@ client.once('clientReady', async () => {
         {
             name: 'gs',
             description: 'ギブアウェイを開始します',
-            default_member_permissions: PermissionFlagsBits.Administrator.toString(),
             options: [
                 { name: 'title', description: '景品名', type: 3, required: true },
                 { name: 'description', description: '詳細', type: 3, required: true },
