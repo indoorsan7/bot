@@ -8,7 +8,8 @@ const {
     PermissionFlagsBits, 
     ChannelType,
     Partials,
-    MessageFlags
+    MessageFlags,
+    ActivityType
 } = require('discord.js');
 const http = require('http');
 const ms = require('ms');
@@ -34,6 +35,27 @@ const client = new Client({
 
 const giveawayWinners = new Map();
 const verifyingUsers = new Map();
+
+// --- ステータスローテーション ---
+function startStatusRotation() {
+    let toggle = false;
+    setInterval(() => {
+        const ping = client.ws.ping;
+        const servers = client.guilds.cache.size;
+        const users = client.guilds.cache.reduce((acc, g) => acc + g.memberCount, 0);
+
+        const statusText = toggle
+            ? `/help || ping:${ping}ms`
+            : `${servers}servers || ${users}users`;
+
+        client.user.setPresence({
+            activities: [{ name: statusText, type: ActivityType.Custom }],
+            status: 'online',
+        });
+
+        toggle = !toggle;
+    }, 3000);
+}
 
 // --- 便利関数 ---
 let isCreatingCategory = false;
@@ -67,6 +89,10 @@ client.once('clientReady', async () => {
     console.log(`${client.user.tag} が正常に起動しました！`);
     
     const commands = [
+        {
+            name: 'help',
+            description: 'コマンド一覧を表示します',
+        },
         {
             name: 'verify',
             description: '認証パネルを作成します',
@@ -106,6 +132,13 @@ client.once('clientReady', async () => {
             options: [
                 { name: 'content', description: '受取対象を選択', type: 3, required: true, autocomplete: true }
             ]
+        },
+        {
+            name: 'dice',
+            description: 'ダイスを振ります (例: 1d6, 2d100)',
+            options: [
+                { name: 'notation', description: 'ダイス記法 (例: 1d6, 2d20, 3d100)', type: 3, required: true }
+            ]
         }
     ];
 
@@ -115,6 +148,8 @@ client.once('clientReady', async () => {
     } catch (error) {
         console.error('コマンド登録中にエラーが発生しました:', error);
     }
+
+    startStatusRotation();
 });
 
 // --- DM認証処理 ---
@@ -142,6 +177,38 @@ client.on('messageCreate', async message => {
 client.on('interactionCreate', async interaction => {
     if (interaction.isChatInputCommand()) {
         const { commandName, options, guild, user } = interaction;
+
+        if (commandName === 'help') {
+            const embed = new EmbedBuilder()
+                .setTitle('📋 コマンド一覧')
+                .setColor(0x5865F2)
+                .addFields(
+                    {
+                        name: '🔐 `/verify`',
+                        value: '認証パネルを作成します。\n`role`: 認証後に付与するロール',
+                    },
+                    {
+                        name: '🎫 `/ticket`',
+                        value: 'チケットパネルを作成します。\n`title`: タイトル　`description`: 説明文\n`button1~4`: ボタン名（最大4つ）',
+                    },
+                    {
+                        name: '🎉 `/gs`',
+                        value: 'ギブアウェイを開始します。\n`title`: 景品名　`description`: 詳細\n`time`: 期間（例: 10s, 1m, 1h）　`number`: 当選人数\n`sponsor`: スポンサー（任意）　`delete_time`: 受取期限（任意）',
+                    },
+                    {
+                        name: '🎁 `/claim`',
+                        value: '当選した景品の受取チャンネルを作成します。\n`content`: 受け取る景品名（オートコンプリート対応）',
+                    },
+                    {
+                        name: '🎲 `/dice`',
+                        value: 'ダイスを振ります。\n`notation`: ダイス記法（例: `1d6`, `2d20`, `3d100`）\n複数ダイスの場合は個別の結果と合計を表示します。',
+                    }
+                )
+                .setFooter({ text: `ping: ${client.ws.ping}ms` })
+                .setTimestamp();
+
+            await interaction.reply({ embeds: [embed] });
+        }
 
         if (commandName === 'verify') {
             const role = options.getRole('role');
@@ -217,7 +284,6 @@ client.on('interactionCreate', async interaction => {
         }
 
         if (commandName === 'claim') {
-            const item = options.getString('content');
             let userData = giveawayWinners.get(user.id) || [];
             const idx = userData.findIndex(i => i.title === item && (i.expire === null || i.expire > Date.now()));
             if (idx === -1) return interaction.reply({ content: '有効な当選データがありません。', flags: MessageFlags.Ephemeral });
