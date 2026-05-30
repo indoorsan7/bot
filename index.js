@@ -260,7 +260,7 @@ client.on('interactionCreate', async interaction => {
         if (commandName === 'ping') {
             const sent = await interaction.reply({ content: '🏓 計測中...', fetchReply: true });
             const roundtrip = sent.createdTimestamp - interaction.createdTimestamp;
-            await interaction.editReply(`🏓 Pong!\nレイテンシ: **${roundtrip}ms** | WebSocket: **${client.ws.ping}ms**`);
+            await interaction.editReply(`🏓 Pong! **${roundtrip}ms**`);
         }
 
         if (commandName === 'verify') {
