@@ -255,6 +255,8 @@ client.on('interactionCreate', async interaction => {
             const roundtrip = sent.createdTimestamp - interaction.createdTimestamp;
             await interaction.editReply(`🏓 Pong!\nレイテンシ: **${roundtrip}ms** | WebSocket: **${client.ws.ping}ms**`);
         }
+
+        if (commandName === 'verify') {
             const role = options.getRole('role');
             const embed = new EmbedBuilder()
                 .setTitle('✅ 認証システム')
