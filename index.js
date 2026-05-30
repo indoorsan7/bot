@@ -35,7 +35,7 @@ const client = new Client({
 
 const giveawayWinners = new Map();
 const verifyingUsers = new Map();
-const giveawayBlacklist = new Set(); // ギブアウェイBANリスト
+const giveawayBlacklist = new Map(); // ギブアウェイBANリスト (guildId -> Set<userId>)
 
 // --- ステータスローテーション ---
 function startStatusRotation() {
@@ -76,6 +76,13 @@ async function getCategory(guild, name) {
         }
     }
     return category;
+}
+
+
+// --- ブラックリスト ヘルパー ---
+function getBlacklist(guildId) {
+    if (!giveawayBlacklist.has(guildId)) giveawayBlacklist.set(guildId, new Set());
+    return giveawayBlacklist.get(guildId);
 }
 
 async function checkAndDeleteCategory(guild, categoryId) {
@@ -313,7 +320,7 @@ client.on('interactionCreate', async interaction => {
             const participants = new Set();
             const collector = msg.createMessageComponentCollector({ time: duration });
             collector.on('collect', async i => {
-                if (giveawayBlacklist.has(i.user.id)) {
+                if (getBlacklist(i.guild.id).has(i.user.id)) {
                     return i.reply({ content: '🚫 あなたはギブアウェイへの参加が禁止されています。', flags: MessageFlags.Ephemeral }).catch(() => {});
                 }
                 if (participants.has(i.user.id)) participants.delete(i.user.id);
@@ -439,10 +446,11 @@ client.on('interactionCreate', async interaction => {
 
             if (sub === 'add') {
                 const target = options.getUser('user');
-                if (giveawayBlacklist.has(target.id)) {
+                const bl_add = getBlacklist(guild.id);
+                if (bl_add.has(target.id)) {
                     return interaction.reply({ content: `⚠️ <@${target.id}> はすでにブラックリストに登録されています。`, flags: MessageFlags.Ephemeral });
                 }
-                giveawayBlacklist.add(target.id);
+                bl_add.add(target.id);
                 const embed = new EmbedBuilder()
                     .setTitle('🚫 ブラックリスト追加')
                     .setDescription(`<@${target.id}> をギブアウェイBANリストに追加しました。`)
@@ -453,10 +461,11 @@ client.on('interactionCreate', async interaction => {
 
             if (sub === 'remove') {
                 const target = options.getUser('user');
-                if (!giveawayBlacklist.has(target.id)) {
+                const bl_rm = getBlacklist(guild.id);
+                if (!bl_rm.has(target.id)) {
                     return interaction.reply({ content: `⚠️ <@${target.id}> はブラックリストに登録されていません。`, flags: MessageFlags.Ephemeral });
                 }
-                giveawayBlacklist.delete(target.id);
+                bl_rm.delete(target.id);
                 const embed = new EmbedBuilder()
                     .setTitle('✅ ブラックリスト解除')
                     .setDescription(`<@${target.id}> をギブアウェイBANリストから削除しました。`)
@@ -470,11 +479,12 @@ client.on('interactionCreate', async interaction => {
                     .setTitle('🚫 ギブアウェイ BANリスト')
                     .setColor(0xFF6600)
                     .setTimestamp();
-                if (giveawayBlacklist.size === 0) {
+                const bl_list = getBlacklist(guild.id);
+                if (bl_list.size === 0) {
                     embed.setDescription('現在、ブラックリストに登録されているユーザーはいません。');
                 } else {
-                    embed.setDescription([...giveawayBlacklist].map((id, i) => `${i + 1}. <@${id}>`).join('\n'));
-                    embed.setFooter({ text: `合計 ${giveawayBlacklist.size} 人` });
+                    embed.setDescription([...bl_list].map((id, i) => `${i + 1}. <@${id}>`).join('\n'));
+                    embed.setFooter({ text: `合計 ${bl_list.size} 人` });
                 }
                 await interaction.reply({ embeds: [embed] });
             }
