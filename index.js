@@ -51,7 +51,7 @@ function startStatusRotation() {
 
         client.user.setPresence({
             activities: [{ name: statusText, type: ActivityType.Custom }],
-            status: 'online',
+            status: 'dnd',
         });
 
         toggle = !toggle;
