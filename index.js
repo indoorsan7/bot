@@ -214,6 +214,23 @@ client.on('messageCreate', async message => {
 
 // --- インタラクション処理 ---
 client.on('interactionCreate', async interaction => {
+    // DMではコマンド使用不可
+    if (!interaction.guild) {
+        if (interaction.isRepliable()) {
+            await interaction.reply({ content: '❌ このBOTはサーバー内でのみ使用できます。', flags: MessageFlags.Ephemeral }).catch(() => {});
+        }
+        return;
+    }
+
+    // 許可ユーザーチェック (/blacklist のみ管理者が使う想定なので除外なし、全コマンド対象)
+    const allowedIds = (process.env.ALLOWED_USER_IDS || '').split(',').map(id => id.trim()).filter(Boolean);
+    if (allowedIds.length > 0 && !allowedIds.includes(interaction.user.id)) {
+        if (interaction.isRepliable()) {
+            await interaction.reply({ content: '❌ このBOTを使用する権限がありません。', flags: MessageFlags.Ephemeral }).catch(() => {});
+        }
+        return;
+    }
+
     if (interaction.isChatInputCommand()) {
         const { commandName, options, guild, user } = interaction;
 
