@@ -258,8 +258,8 @@ client.on('interactionCreate', async interaction => {
         }
 
         if (commandName === 'ping') {
-            const sent = await interaction.reply({ content: '🏓 計測中...', fetchReply: true });
-            const roundtrip = sent.createdTimestamp - interaction.createdTimestamp;
+            const { resource } = await interaction.reply({ content: '🏓 計測中...', withResponse: true });
+            const roundtrip = resource.message.createdTimestamp - interaction.createdTimestamp;
             await interaction.editReply(`🏓 Pong! **${roundtrip}ms**`);
         }
 
