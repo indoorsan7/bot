@@ -35,6 +35,7 @@ const client = new Client({
 
 const giveawayWinners = new Map();
 const verifyingUsers = new Map();
+const giveawayBlacklist = new Set(); // ギブアウェイBANリスト
 
 // --- ステータスローテーション ---
 function startStatusRotation() {
@@ -94,6 +95,10 @@ client.once('clientReady', async () => {
             description: 'コマンド一覧を表示します',
         },
         {
+            name: 'ping',
+            description: 'BOTの応答速度を確認します',
+        },
+        {
             name: 'verify',
             description: '認証パネルを作成します',
             default_member_permissions: PermissionFlagsBits.Administrator.toString(),
@@ -124,6 +129,7 @@ client.once('clientReady', async () => {
                 { name: 'number', description: '当選人数', type: 4, required: true },
                 { name: 'sponsor', description: 'スポンサー (IDまたはメンション)', type: 3, required: false },
                 { name: 'delete_time', description: '受取期限 (例: 1d, 1h)', type: 3, required: false },
+                { name: 'role', description: '景品受け取り対応ロール', type: 8, required: false },
             ]
         },
         {
@@ -138,6 +144,30 @@ client.once('clientReady', async () => {
             description: 'ダイスを振ります (例: 1d6, 2d100)',
             options: [
                 { name: 'notation', description: 'ダイス記法 (例: 1d6, 2d20, 3d100)', type: 3, required: true }
+            ]
+        },
+        {
+            name: 'blacklist',
+            description: 'ギブアウェイのブラックリストを管理します',
+            default_member_permissions: PermissionFlagsBits.Administrator.toString(),
+            options: [
+                {
+                    name: 'add',
+                    description: 'ユーザーをブラックリストに追加します',
+                    type: 1,
+                    options: [{ name: 'user', description: '対象ユーザー', type: 6, required: true }]
+                },
+                {
+                    name: 'remove',
+                    description: 'ユーザーをブラックリストから削除します',
+                    type: 1,
+                    options: [{ name: 'user', description: '対象ユーザー', type: 6, required: true }]
+                },
+                {
+                    name: 'list',
+                    description: 'ブラックリストを表示します',
+                    type: 1,
+                }
             ]
         }
     ];
@@ -186,6 +216,10 @@ client.on('interactionCreate', async interaction => {
                 .setColor(0x5865F2)
                 .addFields(
                     {
+                        name: '📡 `/ping`',
+                        value: 'BOTの応答速度（レイテンシ）を確認します。',
+                    },
+                    {
                         name: '🔐 `/verify`',
                         value: '認証パネルを作成します。\n`role`: 認証後に付与するロール',
                     },
@@ -195,15 +229,19 @@ client.on('interactionCreate', async interaction => {
                     },
                     {
                         name: '🎉 `/gs`',
-                        value: 'ギブアウェイを開始します。\n`title`: 景品名　`description`: 詳細\n`time`: 期間（例: 10s, 1m, 1h）　`number`: 当選人数\n`sponsor`: スポンサー（任意）　`delete_time`: 受取期限（任意）',
+                        value: 'ギブアウェイを開始します。\n`title`: 景品名　`description`: 詳細\n`time`: 期間（例: 10s, 1m, 1h）　`number`: 当選人数\n`sponsor`: スポンサー（任意）　`delete_time`: 受取期限（任意）\n`role`: 景品対応ロール（任意）— そのロール所持者が `/claim` で代わりに対応可能',
                     },
                     {
                         name: '🎁 `/claim`',
-                        value: '当選した景品の受取チャンネルを作成します。\n`content`: 受け取る景品名（オートコンプリート対応）',
+                        value: '当選した景品の受取チャンネルを作成します。\n`content`: 受け取る景品名（オートコンプリート対応）\n当選者本人または対応ロール所持者が実行できます。',
                     },
                     {
                         name: '🎲 `/dice`',
                         value: 'ダイスを振ります。\n`notation`: ダイス記法（例: `1d6`, `2d20`, `3d100`）\n複数ダイスの場合は個別の結果と合計を表示します。',
+                    },
+                    {
+                        name: '🚫 `/blacklist`',
+                        value: 'ギブアウェイのBANリストを管理します。（管理者専用）\n`add user:` ユーザーを追加\n`remove user:` ユーザーを削除\n`list` 一覧表示',
                     }
                 )
                 .setFooter({ text: `ping: ${client.ws.ping}ms` })
@@ -212,7 +250,11 @@ client.on('interactionCreate', async interaction => {
             await interaction.reply({ embeds: [embed] });
         }
 
-        if (commandName === 'verify') {
+        if (commandName === 'ping') {
+            const sent = await interaction.reply({ content: '🏓 計測中...', fetchReply: true });
+            const roundtrip = sent.createdTimestamp - interaction.createdTimestamp;
+            await interaction.editReply(`🏓 Pong!\nレイテンシ: **${roundtrip}ms** | WebSocket: **${client.ws.ping}ms**`);
+        }
             const role = options.getRole('role');
             const embed = new EmbedBuilder()
                 .setTitle('✅ 認証システム')
@@ -248,6 +290,7 @@ client.on('interactionCreate', async interaction => {
             const num = options.getInteger('number');
             const sponsor = options.getString('sponsor');
             const delInput = options.getString('delete_time');
+            const gsRole = options.getRole('role');
 
             if (!duration) return interaction.reply({ content: '期間形式が不正です。', flags: MessageFlags.Ephemeral });
             await interaction.deferReply();
@@ -257,6 +300,7 @@ client.on('interactionCreate', async interaction => {
                 let desc = finished ? `**このギブアウェイは終了しました。**\n\n` : `${options.getString('description')}\n\n`;
                 desc += `当選者数: **${num}**名\n終了: <t:${endTime}:${finished ? 'f' : 'R'}>\nエントリー: **${currentNum}**人\n`;
                 if (sponsor) desc += `スポンサー: ${sponsor.startsWith('<@') ? sponsor : `<@${sponsor}>`}\n`;
+                if (gsRole) desc += `対応ロール: ${gsRole}\n`;
                 if (finished) desc += `\n**当選者:**\n${winnerList.length > 0 ? winnerList.join('\n') : 'なし'}`;
                 return new EmbedBuilder().setTitle(finished ? `【終了】${title}` : `🎉 GIVEAWAY: ${title}`).setDescription(desc).setColor(finished ? 0x2C2F33 : 0xFFD700);
             };
@@ -267,6 +311,9 @@ client.on('interactionCreate', async interaction => {
             const participants = new Set();
             const collector = msg.createMessageComponentCollector({ time: duration });
             collector.on('collect', async i => {
+                if (giveawayBlacklist.has(i.user.id)) {
+                    return i.reply({ content: '🚫 あなたはギブアウェイへの参加が禁止されています。', flags: MessageFlags.Ephemeral }).catch(() => {});
+                }
                 if (participants.has(i.user.id)) participants.delete(i.user.id);
                 else participants.add(i.user.id);
                 await i.update({ embeds: [createEmbed(participants.size)] }).catch(() => {});
@@ -279,7 +326,7 @@ client.on('interactionCreate', async interaction => {
                     interaction.channel.send(`🎊 **${title}** 当選者: ${winnerMentions.join(' ')}\n\`/claim\` で受け取ってください。`);
                     winners.forEach(wId => {
                         if (!giveawayWinners.has(wId)) giveawayWinners.set(wId, []);
-                        giveawayWinners.get(wId).push({ title, expire: delInput ? Date.now() + ms(delInput) : null });
+                        giveawayWinners.get(wId).push({ title, expire: delInput ? Date.now() + ms(delInput) : null, roleId: gsRole ? gsRole.id : null });
                     });
                 }
             });
@@ -319,9 +366,33 @@ client.on('interactionCreate', async interaction => {
 
         if (commandName === 'claim') {
             const item = options.getString('content');
-            let userData = giveawayWinners.get(user.id) || [];
-            const idx = userData.findIndex(i => i.title === item && (i.expire === null || i.expire > Date.now()));
-            if (idx === -1) return interaction.reply({ content: '有効な当選データがありません。', flags: MessageFlags.Ephemeral });
+
+            // 当選者本人のデータを探す
+            let winnerUserId = null;
+            let winnerData = null;
+            let winnerIdx = -1;
+
+            // まず実行者自身が当選者か確認
+            const selfData = giveawayWinners.get(user.id) || [];
+            const selfIdx = selfData.findIndex(i => i.title === item && (i.expire === null || i.expire > Date.now()));
+            if (selfIdx !== -1) {
+                winnerUserId = user.id;
+                winnerData = selfData;
+                winnerIdx = selfIdx;
+            } else {
+                // ロール所持者として他の当選者データを探す
+                for (const [wId, wArr] of giveawayWinners.entries()) {
+                    const idx = wArr.findIndex(i => i.title === item && (i.expire === null || i.expire > Date.now()) && i.roleId && member.roles.cache.has(i.roleId));
+                    if (idx !== -1) {
+                        winnerUserId = wId;
+                        winnerData = wArr;
+                        winnerIdx = idx;
+                        break;
+                    }
+                }
+            }
+
+            if (winnerIdx === -1) return interaction.reply({ content: '有効な当選データがありません。', flags: MessageFlags.Ephemeral });
 
             const existing = guild.channels.cache.find(c => 
                 c.name.startsWith('claim-') && c.name.toLowerCase().includes(user.username.toLowerCase())
@@ -331,32 +402,104 @@ client.on('interactionCreate', async interaction => {
             await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
             try {
+                const roleId = winnerData[winnerIdx].roleId;
                 const category = await getCategory(guild, '---claim---');
+                const permOverwrites = [
+                    { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+                    { id: user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
+                ];
+                if (winnerUserId !== user.id) {
+                    permOverwrites.push({ id: winnerUserId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] });
+                }
+                if (roleId) {
+                    permOverwrites.push({ id: roleId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] });
+                }
                 const claimCh = await guild.channels.create({
                     name: `claim-${user.username}`,
                     parent: category.id,
-                    permissionOverwrites: [
-                        { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-                        { id: user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
-                    ],
+                    permissionOverwrites,
                 });
-                userData.splice(idx, 1);
-                if (userData.length === 0) giveawayWinners.delete(user.id);
-                else giveawayWinners.set(user.id, userData);
+                winnerData.splice(winnerIdx, 1);
+                if (winnerData.length === 0) giveawayWinners.delete(winnerUserId);
+                else giveawayWinners.set(winnerUserId, winnerData);
 
                 const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('close_ch').setLabel('クローズ').setStyle(ButtonStyle.Danger));
                 await interaction.editReply({ content: `作成しました: ${claimCh}` });
-                await claimCh.send({ content: `<@${user.id}> さんの景品: **${item}**`, components: [row] });
+                const isProxy = winnerUserId !== user.id;
+                await claimCh.send({ content: `景品: **${item}**\n当選者: <@${winnerUserId}>${isProxy ? `\n対応者: <@${user.id}>` : ''}`, components: [row] });
             } catch (err) {
                 await interaction.editReply({ content: 'エラーが発生しました。' });
+            }
+        }
+
+        if (commandName === 'blacklist') {
+            const sub = options.getSubcommand();
+
+            if (sub === 'add') {
+                const target = options.getUser('user');
+                if (giveawayBlacklist.has(target.id)) {
+                    return interaction.reply({ content: `⚠️ <@${target.id}> はすでにブラックリストに登録されています。`, flags: MessageFlags.Ephemeral });
+                }
+                giveawayBlacklist.add(target.id);
+                const embed = new EmbedBuilder()
+                    .setTitle('🚫 ブラックリスト追加')
+                    .setDescription(`<@${target.id}> をギブアウェイBANリストに追加しました。`)
+                    .setColor(0xFF0000)
+                    .setTimestamp();
+                await interaction.reply({ embeds: [embed] });
+            }
+
+            if (sub === 'remove') {
+                const target = options.getUser('user');
+                if (!giveawayBlacklist.has(target.id)) {
+                    return interaction.reply({ content: `⚠️ <@${target.id}> はブラックリストに登録されていません。`, flags: MessageFlags.Ephemeral });
+                }
+                giveawayBlacklist.delete(target.id);
+                const embed = new EmbedBuilder()
+                    .setTitle('✅ ブラックリスト解除')
+                    .setDescription(`<@${target.id}> をギブアウェイBANリストから削除しました。`)
+                    .setColor(0x00FF00)
+                    .setTimestamp();
+                await interaction.reply({ embeds: [embed] });
+            }
+
+            if (sub === 'list') {
+                const embed = new EmbedBuilder()
+                    .setTitle('🚫 ギブアウェイ BANリスト')
+                    .setColor(0xFF6600)
+                    .setTimestamp();
+                if (giveawayBlacklist.size === 0) {
+                    embed.setDescription('現在、ブラックリストに登録されているユーザーはいません。');
+                } else {
+                    embed.setDescription([...giveawayBlacklist].map((id, i) => `${i + 1}. <@${id}>`).join('\n'));
+                    embed.setFooter({ text: `合計 ${giveawayBlacklist.size} 人` });
+                }
+                await interaction.reply({ embeds: [embed] });
             }
         }
     }
 
     if (interaction.isAutocomplete()) {
-        const userData = giveawayWinners.get(interaction.user.id) || [];
-        const active = userData.filter(i => i.expire === null || i.expire > Date.now());
-        await interaction.respond(active.slice(0, 25).map(i => ({ name: i.title, value: i.title })));
+        const selfItems = (giveawayWinners.get(interaction.user.id) || [])
+            .filter(i => i.expire === null || i.expire > Date.now());
+
+        // ロール所持者として対応できる他の当選者の景品も候補に含める
+        const roleItems = [];
+        const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
+        if (member) {
+            for (const [wId, wArr] of giveawayWinners.entries()) {
+                if (wId === interaction.user.id) continue;
+                for (const i of wArr) {
+                    if ((i.expire === null || i.expire > Date.now()) && i.roleId && member.roles.cache.has(i.roleId)) {
+                        roleItems.push({ name: `${i.title} (代理対応)`, value: i.title });
+                    }
+                }
+            }
+        }
+
+        const selfMapped = selfItems.map(i => ({ name: i.title, value: i.title }));
+        const combined = [...selfMapped, ...roleItems].slice(0, 25);
+        await interaction.respond(combined);
     }
 
     if (interaction.isButton()) {
