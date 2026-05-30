@@ -143,10 +143,12 @@ client.once('clientReady', async () => {
     ];
 
     try {
-        await client.application.commands.set(commands);
-        console.log('スラッシュコマンドを登録しました。');
+        console.log('スラッシュコマンドを同期中...');
+        const synced = await client.application.commands.set(commands);
+        synced.forEach(cmd => console.log(`  ✅ /${cmd.name} を同期しました`));
+        console.log(`🎉 計 ${synced.size} 件のコマンドの同期が完了しました！`);
     } catch (error) {
-        console.error('コマンド登録中にエラーが発生しました:', error);
+        console.error('❌ コマンド同期中にエラーが発生しました:', error);
     }
 
     startStatusRotation();
@@ -283,7 +285,40 @@ client.on('interactionCreate', async interaction => {
             });
         }
 
+        if (commandName === 'dice') {
+            const notation = options.getString('notation').trim().toLowerCase();
+            const match = notation.match(/^(\d+)d(\d+)$/);
+            if (!match) return interaction.reply({ content: '❌ 形式が正しくありません。`1d6` や `2d100` のように入力してください。', flags: MessageFlags.Ephemeral });
+
+            const count = parseInt(match[1]);
+            const faces = parseInt(match[2]);
+
+            if (count < 1 || count > 100) return interaction.reply({ content: '❌ ダイスの数は1〜100にしてください。', flags: MessageFlags.Ephemeral });
+            if (faces < 2 || faces > 1000000) return interaction.reply({ content: '❌ 面数は2〜1,000,000にしてください。', flags: MessageFlags.Ephemeral });
+
+            const rolls = Array.from({ length: count }, () => Math.floor(Math.random() * faces) + 1);
+            const total = rolls.reduce((a, b) => a + b, 0);
+
+            const embed = new EmbedBuilder()
+                .setTitle(`🎲 ${notation.toUpperCase()}`)
+                .setColor(0xE74C3C)
+                .addFields(
+                    { name: '結果', value: count === 1
+                        ? `**${total}**`
+                        : rolls.map((r, i) => `ダイス${i + 1}: **${r}**`).join('\n')
+                    },
+                    ...(count > 1 ? [
+                        { name: '合計', value: `**${total}**`, inline: true },
+                        { name: '平均', value: `**${(total / count).toFixed(2)}**`, inline: true }
+                    ] : [])
+                )
+                .setFooter({ text: `${user.username} が振りました` });
+
+            await interaction.reply({ embeds: [embed] });
+        }
+
         if (commandName === 'claim') {
+            const item = options.getString('content');
             let userData = giveawayWinners.get(user.id) || [];
             const idx = userData.findIndex(i => i.title === item && (i.expire === null || i.expire > Date.now()));
             if (idx === -1) return interaction.reply({ content: '有効な当選データがありません。', flags: MessageFlags.Ephemeral });
